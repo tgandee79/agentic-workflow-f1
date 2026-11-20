@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { season } from '@/data/season'
 import type { Race, ResultRow } from '@/data/types'
-import { constructorStandings, driverStandings } from './standings'
+import { constructorStandings, driverStandings, latestConstructor } from './standings'
 
 const row = (driverId: string, constructorId: string, position: number, points: number): ResultRow => ({
   position,
@@ -54,5 +54,13 @@ describe('standings', () => {
       ['piastri', 410],
     ])
     expect(constructorStandings(season.races)[0]).toMatchObject({ id: 'mclaren', points: 833 })
+  })
+})
+
+describe('latestConstructor', () => {
+  it('returns the team of the most recent race, or undefined for an unknown driver', () => {
+    const races = [race(1, [row('a', 'x', 1, 25)]), race(2, [row('a', 'y', 2, 18)])]
+    expect(latestConstructor(races, 'a')).toBe('y')
+    expect(latestConstructor(races, 'nobody')).toBeUndefined()
   })
 })

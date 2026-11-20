@@ -35,3 +35,7 @@ const flatten = (races: Race[], by: (r: ResultRow) => string) =>
 export const driverStandings = (races: Race[]): StandingRow[] => rank(flatten(races, (r) => r.driverId))
 
 export const constructorStandings = (races: Race[]): StandingRow[] => rank(flatten(races, (r) => r.constructorId))
+
+// The team a driver raced for most recently (drivers can change teams mid-season).
+export const latestConstructor = (races: Race[], driverId: string): string | undefined =>
+  races.flatMap((race) => race.results).findLast((row) => row.driverId === driverId)?.constructorId
