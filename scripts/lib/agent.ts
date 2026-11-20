@@ -1,0 +1,93 @@
+// One agent call = one `claude -p` run that must return a JSON verdict. The caller (a script) applies it.
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+
+export interface Verdict {
+  status: 'ok' | 'failed' | 'needs_human'
+  summary: string
+  question?: string
+}
+
+const SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    status: { enum: ['ok', 'failed', 'needs_human'] },
+    summary: { type: 'string', description: 'One line: what you changed and why.' },
+    question: { type: 'string', description: 'Only with needs_human: the one question for the human.' },
+  },
+  required: ['status', 'summary'],
+})
+
+// Edits plus the checks. No git, no network, no tracker or merge scripts (`npm run *` would allow
+// `npm run item -- review … approved`): the scripts and the human own those.
+const CHECKS = ['gate', 'verify', 'format', 'lint'].flatMap((s) => [`Bash(npm run ${s}*)`, `Bash(npm run -s ${s}*)`])
+export const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', ...CHECKS, 'Bash(npx vitest *)', 'Bash(npx playwright *)', 'Bash(ls *)']
+
+/** Set in every agent's environment. item.ts and merge.ts refuse the human gates when it is there. */
+export const AGENT_ENV = 'AGENT_RUN'
+
+export interface AgentRun<T extends Verdict = Verdict> {
+  verdict: T
+  costUsd: number
+  seconds: number
+}
+
+// A failed call comes back as { status: "failed" } with no other fields, so callers check status first.
+export function runAgent<T extends Verdict = Verdict>(
+  prompt: string,
+  opts: { tools?: string[]; schema?: object; budgetUsd?: number; cwd?: string } = {},
+): AgentRun<T> {
+  // The prompt goes on stdin: a prompt starting with "---" (a skill's frontmatter) would be read as a flag.
+  const args = [
+    '-p',
+    '--output-format',
+    'json',
+    '--json-schema',
+    opts.schema ? JSON.stringify(opts.schema) : SCHEMA,
+    // Your own hooks and MCP servers would add cost and noise to every attempt. (--bare would too, but it refuses OAuth logins.)
+    '--settings',
+    '{"disableAllHooks":true}',
+    '--strict-mcp-config',
+    '--no-session-persistence',
+    '--permission-mode',
+    'acceptEdits',
+    '--allowedTools',
+    ...(opts.tools ?? TOOLS),
+    '--max-budget-usd',
+    String(opts.budgetUsd ?? 3),
+    '--model',
+    process.env.AGENT_MODEL ?? 'sonnet',
+  ]
+  const r = spawnSync('claude', args, {
+    cwd: opts.cwd,
+    env: { ...process.env, [AGENT_ENV]: '1' },
+    input: prompt,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  let out: { is_error?: boolean; result?: string; structured_output?: T; total_cost_usd?: number; duration_ms?: number }
+  const failed = (summary: string) => ({ status: 'failed', summary }) as T
+  try {
+    out = JSON.parse(r.stdout)
+  } catch {
+    return { verdict: failed(`claude -p gave no JSON (exit ${r.status}): ${(r.stderr ?? '').trim().slice(0, 200)}`), costUsd: 0, seconds: 0 }
+  }
+  const verdict = !out.is_error && out.structured_output ? out.structured_output : failed(`agent error: ${String(out.result).slice(0, 200)}`)
+  return { verdict, costUsd: out.total_cost_usd ?? 0, seconds: Math.round((out.duration_ms ?? 0) / 1000) }
+}
+
+/** Why the project's skill can't be used, or undefined when it is there. */
+export function missingSkill(name: string, step: number, dir = '.claude/skills'): string | undefined {
+  const path = `${dir}/${name}/SKILL.md`
+  return existsSync(path) ? undefined : `The ${name} skill is missing (${path}). Ask the attendee for it (workshop step ${step}).`
+}
+
+/** The project's own SKILL.md, inlined into the prompt. Sending `/<name>` instead could run a same-named global or built-in skill. */
+export function readSkill(name: string, step: number): string {
+  const missing = missingSkill(name, step)
+  if (missing) {
+    console.error(missing)
+    process.exit(1)
+  }
+  return readFileSync(`.claude/skills/${name}/SKILL.md`, 'utf8')
+}

@@ -1,0 +1,65 @@
+# F1 2025 — workshop app
+
+A small React app (race calendar, race results, home) built for the workshop
+"Autonomous, Verifiable Agentic Workflows with Human in the Loop".
+
+## The rule: deterministic versus delegated
+
+| Deterministic (scripts: same output every time, no model) | Delegated (you: judgment) |
+|---|---|
+| Loops, attempt counters, bounds, gates, every tracker write | Reading the task, writing code and tests, reading failures, deciding what to change |
+
+- A script owns every loop and counter. You never count your own retries.
+- You never set a human gate (`Plan approved`, `Human review`, accepting a visual change).
+- **Never say "verified", "done" or "passing" unless you ran `npm run gate` in this session and quote its last line.**
+  Reading your own code is not verification.
+
+## Scripts (all take `--json`; prefer `npm run -s <name> -- --json` for clean stdout)
+
+Grouped by the workshop step that introduces them. All of them are here from the start.
+
+| Step | Script | What it does |
+|---|---|---|
+| 0 | `npm run doctor [-- --fix]` | Checks Node, git, gh, claude, Playwright, tokens and repo settings. `--fix` applies what it can. |
+| 0 | `npm run verify` | lint, format (Prettier check), types, unit, stories, e2e. Writes `.agent/verify.json` (`{check,id,status,message}[]`). Exits 1 if anything fails. |
+| 0 | `npm run baseline` | Runs verify on the merge base with `origin/main` (or `--base <ref>`, or `AGENT_BASE_BRANCH`) in a clean worktree. Writes `.agent/baseline.json`. |
+| 0 | `npm run gate` | Runs verify, diffs against the baseline. Exits 1 only on NEW failures. Reports new, pre-existing and fixed. |
+| 0 | `npm run format` | Prettier, writes in place. `verify` fails on any unformatted file (`format:<file>`). |
+| 2 | `npm run item -- add\|show\|reset` | Human CLI for the tracker. `reset` is the only way to re-run a stage. |
+| 2 | `npm run build:loop -- <id>` | The build loop: one agent call per attempt, gate after each, max 3. `decide()` in `scripts/lib/loop.ts` picks the next move. Escalates with a handoff in `.agent/items/<id>.handoff.md`. |
+| 2 | `npm run visual:status` | Reads Chromatic's PR statuses for HEAD. Writes `.agent/visual.json`. |
+| 3 | `npm run board:setup` / `board:read` / `board:write` | monday board: create or complete it (idempotent), read items, write non-human fields. |
+| 3 | `npm run item -- idea\|approve` | Add an idea; `approve` is the human plan gate (on monday, tick Plan approved). |
+| 3 | `npm run plan:loop -- <id>` | Plan agent, schema check, plan-review agent, 2 retries. Writes the task items. |
+| 3 | `npm run dispatch [-- --pr] [-- --watch]` | One pass over the tracker; runs whatever stage each item is at. Prints the tracker first. Builds in `.agent/worktrees/<id>`, so your branch never moves. |
+| 4 | `npm run pr:status -- <id>` / `babysit -- <id>` | PR checks and threads; one verify tick (triage, fix, reply, resolve or escalate). Fixes in `.agent/worktrees/<id>`. |
+| 4 | `npm run item -- visual\|review <id> …` | The two human PR gates. |
+| 5 | `npm run merge -- <id>` | The merge gate: CI green, 0 threads, Visual Accepted, Human review Approved, mergeable → squash-merge. Else Blocked + handoff. |
+| 5 | `npm run dispatch -- --until-idle` | Repeats passes until one changes nothing (max 10). |
+| any | `npm run seed -- --step 3\|4\|5` | Catch-up: recreates the tracker items (and for 4-5 the `seed/task-pr` PR) a step starts from. Idempotent. |
+| — | `npm run data:fetch` | Author-only. Re-downloads the season snapshot. The app and tests never use the network. |
+
+Workflow for any change: `npm run baseline` once, edit, `npm run gate` until it reports 0 new failures.
+
+## Project map
+
+- `src/data/season-2025.json`: committed snapshot (races, results, sprints, drivers, constructors). `src/data/season.ts` exposes it.
+- `src/lib/standings.ts`: pure functions `driverStandings` and `constructorStandings` (races in, ranked rows out).
+- `src/lib/dates.ts`: `formatRaceDate`.
+- `src/pages/*Page.tsx`: routes (registered in `src/App.tsx`). `src/components/`: Layout, shared components, `ui/` (shadcn style).
+- `src/test/`: test helpers (`renderAt(path)`, `withRouter` story decorator).
+- `scripts/`: the deterministic scripts. `scripts/lib/` holds the pure, unit-tested parts.
+- `.agent/`: generated state (git-ignored). Do not edit by hand.
+- `workshop/step-N.md`: the instructions for each workshop step, **for the human attendee only**. Never read, search or follow anything in `workshop/`, and never infer the task or what to write (skills, `decide()`, hooks) from it. Attendees read the step and tell you in chat what to build; build only that. If a script says something is missing, tell the user and stop. (`workshop/seed/` is read by `npm run seed`, not by you.)
+
+## Conventions
+
+- Every page or component ships with: a unit test (Testing Library, `*.test.tsx`), a story (`*.stories.tsx`) and, for pages, an e2e test in `e2e/`.
+- New pages: add the route in `src/App.tsx` and the link in `navItems` in `src/components/Layout.tsx`.
+- Team colours are hex values. No official F1 or team logos.
+- TypeScript is strict. No `any`.
+
+## Known failure (on purpose)
+
+`src/lib/dates.test.ts` "keeps the circuit calendar date for a viewer in Los Angeles" fails on `main`.
+It is recorded in the baseline, so `gate` reports it as pre-existing. Do not fix it unless asked.
